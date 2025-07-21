@@ -8,12 +8,17 @@ import xlrd
 import xlwt
 from xlutils.copy import copy
 import json
+import win32print
+import win32api
+import os
+import re
+from tkinter import messagebox
 
 
 class DocumentGenerator:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Генератор документов Excel")
+        self.root.title("Генератор пака документов Excel v 0.0.2")
         self.root.geometry("1000x700")
 
         # Основная директория
@@ -39,8 +44,93 @@ class DocumentGenerator:
         if not os.path.exists(self.templates_dir):
             os.makedirs(self.templates_dir)
 
+        # Добавить файл для хранения номеров документов
+        self.numbers_file = "document_numbers.json"
+        self.document_numbers = {}  # {doc_type: current_number}
+
+        self.load_document_numbers()
         self.load_settings()
         self.create_widgets()
+
+    def load_document_numbers(self):
+        """Загружает номера документов из файла"""
+        try:
+            if os.path.exists(self.numbers_file):
+                with open(self.numbers_file, 'r', encoding='utf-8') as f:
+                    self.document_numbers = json.load(f)
+            else:
+                # Инициализация начальными номерами для каждого типа документа
+                self.document_numbers = {
+                    "Акт выполненных работ": 1,
+                    "Счет": 1,
+                    "Счет-фактура": 1
+                }
+                self.save_document_numbers()
+        except Exception as e:
+            print(f"Ошибка загрузки номеров документов: {e}")
+            self.document_numbers = {
+                "Акт выполненных работ": 1,
+                "Счет": 1,
+                "Счет-фактура": 1
+            }
+
+    def save_document_numbers(self):
+        """Сохраняет номера документов в файл"""
+        try:
+            with open(self.numbers_file, 'w', encoding='utf-8') as f:
+                json.dump(self.document_numbers, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Ошибка сохранения номеров документов: {e}")
+
+    def get_next_document_number(self, doc_type):
+        """Получает следующий номер документа для указанного типа"""
+        current_number = self.document_numbers.get(doc_type, 1)
+        self.document_numbers[doc_type] = current_number + 1
+        self.save_document_numbers()
+        return current_number
+
+    def manage_document_numbers(self):
+        """Окно управления номерами документов"""
+        window = tk.Toplevel(self.root)
+        window.title("Управление номерами документов")
+        window.geometry("400x250")
+
+        frame = ttk.Frame(window, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Текущие номера документов:",
+                  font=('TkDefaultFont', 10, 'bold')).pack(pady=(0, 10))
+
+        # Словарь для хранения переменных полей ввода
+        number_vars = {}
+
+        for i, (doc_type, current_number) in enumerate(self.document_numbers.items()):
+            row_frame = ttk.Frame(frame)
+            row_frame.pack(fill=tk.X, pady=5)
+
+            ttk.Label(row_frame, text=f"{doc_type}:").pack(side=tk.LEFT)
+
+            var = tk.StringVar(value=str(current_number))
+            number_vars[doc_type] = var
+
+            entry = ttk.Entry(row_frame, textvariable=var, width=10)
+            entry.pack(side=tk.RIGHT)
+
+        def save_numbers():
+            try:
+                for doc_type, var in number_vars.items():
+                    self.document_numbers[doc_type] = int(var.get())
+                self.save_document_numbers()
+                messagebox.showinfo("Успех", "Номера документов обновлены")
+                window.destroy()
+            except ValueError:
+                messagebox.showerror("Ошибка", "Введите корректные числа")
+
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+
+        ttk.Button(button_frame, text="Сохранить", command=save_numbers).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="Отмена", command=window.destroy).pack(side=tk.RIGHT)
 
     def number_to_words(self, number):
         """Преобразует число в текст прописью"""
@@ -201,6 +291,16 @@ class DocumentGenerator:
         menubar.add_cascade(label="Настройки", menu=settings_menu)
         settings_menu.add_command(label="Управление контрагентами", command=self.manage_contractors)
         settings_menu.add_command(label="Управление шаблонами", command=self.manage_templates)
+        settings_menu.add_command(label="Номера документов", command=self.manage_document_numbers)
+        print_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Печать", menu=print_menu)
+        print_menu.add_command(label="Печать документов", command=self.open_print_window)
+
+        def add_print_menu_to_widgets(self):
+            """В методе create_widgets после settings_menu добавить:"""
+            print_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Печать", menu=print_menu)
+            print_menu.add_command(label="Печать документов", command=self.open_print_window)
 
         # Основной фрейм с прокруткой
         canvas = tk.Canvas(self.root)
@@ -449,7 +549,7 @@ class DocumentGenerator:
         ttk.Label(frame, text="Шаблоны должны находиться в папке 'templates'").pack(pady=(0, 10))
         ttk.Label(frame, text="Имена файлов: {Контрагент}_{Тип документа}.xls").pack(pady=(0, 10))
         ttk.Label(frame, text="В шаблонах используйте метки:").pack(pady=(0, 5))
-        ttk.Label(frame, text="[ДАТА], [КОЛИЧЕСТВО], [ЦЕНА], [СТОИМОСТЬ], [СТОИМОСТЬ_ПРОПИСЬЮ]",
+        ttk.Label(frame, text="[НОМЕР], [ДАТА], [КОЛИЧЕСТВО], [ЦЕНА], [СТОИМОСТЬ], [СТОИМОСТЬ_ПРОПИСЬЮ]",
                   font=('TkDefaultFont', 9, 'bold')).pack(pady=(0, 10))
 
         # Список существующих шаблонов
@@ -477,9 +577,8 @@ class DocumentGenerator:
         filename = f"{contractor}_{doc_type}.xls"
         return os.path.join(self.templates_dir, filename)
 
-    def get_output_path(self, contractor, doc_type, month, year):
-        """Возвращает путь для сохранения документа"""
-        # Названия месяцев
+    def get_output_path(self, contractor, doc_type, month, year, doc_number):
+        """Возвращает путь для сохранения документа с номером"""
         month_names = {
             1: "январь", 2: "февраль", 3: "март", 4: "апрель",
             5: "май", 6: "июнь", 7: "июль", 8: "август",
@@ -493,79 +592,64 @@ class DocumentGenerator:
         last_day = monthrange(year, month)[1]
         date_str = f"{last_day:02d}.{month:02d}.{year}"
 
-        filename = f"{doc_type} {date_str}.xls"
+        # Имя файла с номером
+        filename = f"{doc_type} № {doc_number} от {date_str}.xls"
 
         dir_path = os.path.join(self.base_dir, contractor, folder_name)
-
-        # Создаем директорию если её нет
         os.makedirs(dir_path, exist_ok=True)
 
         return os.path.join(dir_path, filename)
 
-    def create_document(self, contractor, doc_type, month, year, quantity, price, total):
-        """Создает один документ"""
+    def create_document(self, contractor, doc_type, month, year, quantity, price, total, doc_number):
+        """Создает один документ с номером"""
         try:
-            # Получаем пути
             template_path = self.get_template_path(contractor, doc_type)
-            output_path = self.get_output_path(contractor, doc_type, month, year)
+            output_path = self.get_output_path(contractor, doc_type, month, year, doc_number)
 
-            # Проверяем наличие шаблона
             if not os.path.exists(template_path):
                 raise Exception(f"Шаблон не найден: {template_path}")
 
-            # Открываем шаблон для чтения
             rb = xlrd.open_workbook(template_path, formatting_info=True)
             wb = copy(rb)
             sheet = wb.get_sheet(0)
 
-            # Заполняем данные
             last_day = monthrange(year, month)[1]
             date_str = f"{last_day:02d}.{month:02d}.{year}"
 
-            # Форматируем суммы
             formatted_quantity = self.format_amount(quantity)
             formatted_price = self.format_amount(price)
             formatted_total = self.format_amount(total)
-
-            # Получаем расшифровку суммы прописью
             total_in_words = self.number_to_words(total)
 
-            # Читаем оригинальный файл для поиска меток
             original_sheet = rb.sheet_by_index(0)
 
-            # Ищем и заменяем ячейки с определенными значениями
             for row_idx in range(original_sheet.nrows):
                 for col_idx in range(original_sheet.ncols):
                     try:
                         cell_value = original_sheet.cell_value(row_idx, col_idx)
                         if isinstance(cell_value, str) and cell_value:
                             new_value = cell_value
-                            # Замена даты
+
+                            # Добавляем замену номера документа
+                            if "[НОМЕР]" in new_value:
+                                new_value = new_value.replace("[НОМЕР]", str(doc_number))
                             if "[ДАТА]" in new_value:
                                 new_value = new_value.replace("[ДАТА]", date_str)
-                            # Замена количества
                             if "[КОЛИЧЕСТВО]" in new_value:
                                 new_value = new_value.replace("[КОЛИЧЕСТВО]", formatted_quantity)
-                            # Замена цены
                             if "[ЦЕНА]" in new_value:
                                 new_value = new_value.replace("[ЦЕНА]", formatted_price)
-                            # Замена общей стоимости
                             if "[СТОИМОСТЬ]" in new_value:
                                 new_value = new_value.replace("[СТОИМОСТЬ]", formatted_total)
-                            # Замена расшифровки суммы
                             if "[СТОИМОСТЬ_ПРОПИСЬЮ]" in new_value:
                                 new_value = new_value.replace("[СТОИМОСТЬ_ПРОПИСЬЮ]", total_in_words)
 
-                            # Если значение изменилось, записываем его
                             if new_value != cell_value:
                                 sheet.write(row_idx, col_idx, new_value)
-                    except Exception as e:
-                        # Игнорируем ошибки отдельных ячеек
+                    except Exception:
                         continue
 
-            # Сохраняем файл
             wb.save(output_path)
-
             return True, output_path
 
         except Exception as e:
@@ -627,11 +711,20 @@ class DocumentGenerator:
 
                 contractor_created = 0
 
+                # Получаем номера документов для каждого типа
+                contractor_doc_numbers = {}
                 for doc_type in selected_doc_types:
-                    success, result = self.create_document(contractor, doc_type, month, year, quantity, price, total)
+                    contractor_doc_numbers[doc_type] = self.get_next_document_number(doc_type)
+
+                # Создаем документы с полученными номерами
+                for doc_type in selected_doc_types:
+                    doc_number = contractor_doc_numbers[doc_type]
+                    # ИСПРАВЛЕНИЕ: добавляем недостающий аргумент doc_number
+                    success, result = self.create_document(contractor, doc_type, month, year, quantity, price, total,
+                                                           doc_number)
 
                     if success:
-                        self.log(f"✓ Создан: {contractor} - {doc_type}")
+                        self.log(f"✓ Создан: {contractor} - {doc_type} № {doc_number}")
                         total_created += 1
                         contractor_created += 1
                     else:
@@ -657,6 +750,338 @@ class DocumentGenerator:
             error_msg = f"Общая ошибка: {str(e)}"
             self.log(error_msg)
             messagebox.showerror("Ошибка", error_msg)
+
+    def get_available_printers(self):
+        """Получает список доступных принтеров"""
+        try:
+            printers = [printer[2] for printer in
+                        win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)]
+            return printers
+        except:
+            return []
+
+    def get_month_folder_name(self, month, year):
+        """Возвращает название папки месяца"""
+        month_names = {
+            1: "январь", 2: "февраль", 3: "март", 4: "апрель",
+            5: "май", 6: "июнь", 7: "июль", 8: "август",
+            9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь"
+        }
+        return f"{month_names[month]} {year}"
+
+    def find_documents_for_print(self, contractor, month, year, doc_types):
+        """Находит документы для печати"""
+        import re
+
+        folder_name = self.get_month_folder_name(month, year)
+        contractor_path = os.path.join(self.base_dir, contractor, folder_name)
+
+        if not os.path.exists(contractor_path):
+            return []
+
+        found_docs = []
+
+        # Получаем все файлы в папке
+        all_files = [f for f in os.listdir(contractor_path) if f.endswith('.xls')]
+
+        for doc_type in doc_types:
+            # Создаем регулярное выражение для точного поиска
+            # Ищем файлы, которые начинаются с типа документа, за которым следует " № " и номер
+            pattern = re.compile(rf"^{re.escape(doc_type)} № \d+")
+
+            for file in all_files:
+                if pattern.match(file):
+                    found_docs.append({
+                        'type': doc_type,
+                        'file': file,
+                        'path': os.path.join(contractor_path, file)
+                    })
+                    break  # Найден файл для этого типа документа, переходим к следующему типу
+
+        return found_docs
+
+    def print_document(self, file_path, printer_name, copies=1):
+        """Печатает документ Excel"""
+        try:
+            # Открываем Excel файл и печатаем
+            win32api.ShellExecute(0, "print", file_path, f'/p:{printer_name}', ".", 0)
+            return True
+        except Exception as e:
+            return False, str(e)
+
+    def open_print_window(self):
+        """Открывает окно печати документов"""
+        window = tk.Toplevel(self.root)
+        window.title("Печать документов")
+        window.geometry("800x900")
+
+        main_frame = ttk.Frame(window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Верхняя панель с настройками
+        settings_frame = ttk.LabelFrame(main_frame, text="Настройки печати", padding="10")
+        settings_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Первая строка: месяц, год, принтер
+        row1 = ttk.Frame(settings_frame)
+        row1.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(row1, text="Месяц:").pack(side=tk.LEFT, padx=(0, 5))
+        month_var = tk.StringVar(value=str(datetime.now().month))
+        months = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+        ttk.Combobox(row1, textvariable=month_var, values=months, state="readonly", width=8).pack(side=tk.LEFT,
+                                                                                                  padx=(0, 20))
+
+        ttk.Label(row1, text="Год:").pack(side=tk.LEFT, padx=(0, 5))
+        year_var = tk.StringVar(value=str(datetime.now().year))
+        ttk.Entry(row1, textvariable=year_var, width=8).pack(side=tk.LEFT, padx=(0, 20))
+
+        ttk.Label(row1, text="Принтер:").pack(side=tk.LEFT, padx=(0, 5))
+        printer_var = tk.StringVar()
+        printers = self.get_available_printers()
+        printer_combo = ttk.Combobox(row1, textvariable=printer_var, values=printers, state="readonly", width=30)
+        printer_combo.pack(side=tk.LEFT, padx=(0, 20))
+        if printers:
+            printer_combo.set(printers[0])
+
+        # Вторая строка: типы документов
+        row2 = ttk.Frame(settings_frame)
+        row2.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(row2, text="Типы документов:").pack(side=tk.LEFT, padx=(0, 10))
+        doc_vars = {}
+        for doc_type in self.doc_types:
+            var = tk.BooleanVar(value=True)
+            doc_vars[doc_type] = var
+            ttk.Checkbutton(row2, text=doc_type, variable=var).pack(side=tk.LEFT, padx=(0, 15))
+
+        # Третья строка: количество копий для каждого типа документа
+        row3 = ttk.Frame(settings_frame)
+        row3.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(row3, text="Количество копий:").pack(side=tk.LEFT, padx=(0, 10))
+        copies_vars = {}
+        for doc_type in self.doc_types:
+            ttk.Label(row3, text=f"{doc_type}:").pack(side=tk.LEFT, padx=(0, 5))
+            var = tk.StringVar(value="1")
+            copies_vars[doc_type] = var
+            ttk.Entry(row3, textvariable=var, width=5).pack(side=tk.LEFT, padx=(0, 15))
+
+        # Четвертая строка: кнопки
+        row4 = ttk.Frame(settings_frame)
+        row4.pack(fill=tk.X)
+
+        ttk.Button(row4, text="Обновить список",
+                   command=lambda: self.update_print_table(table_frame, month_var, year_var, doc_vars)).pack(
+            side=tk.LEFT, padx=(0, 10))
+        ttk.Button(row4, text="Печать выбранных",
+                   command=lambda: self.print_selected_documents(table_frame, printer_var, copies_vars)).pack(
+            side=tk.LEFT)
+        ttk.Button(row4, text="Выбрать все",
+                   command=lambda: self.select_all_print_documents(table_frame)).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Button(row4, text="Снять выбор",
+                   command=lambda: self.deselect_all_print_documents(table_frame)).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Основная таблица с документами
+        table_frame = ttk.LabelFrame(main_frame, text="Найденные документы", padding="10")
+        table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Создаем таблицу
+        self.create_print_table(table_frame, month_var, year_var, doc_vars)
+
+        # Область для логов печати
+        log_frame = ttk.LabelFrame(main_frame, text="Лог печати", padding="5")
+        log_frame.pack(fill=tk.X)
+
+        print_log = tk.Text(log_frame, height=6)
+        print_log.pack(fill=tk.X)
+
+        # Сохраняем ссылки для использования в других методах
+        window.print_log = print_log
+        window.table_frame = table_frame
+
+    def create_print_table(self, parent, month_var, year_var, doc_vars):
+        """Создает таблицу документов для печати"""
+        # Очищаем предыдущую таблицу
+        for widget in parent.winfo_children():
+            widget.destroy()
+
+        # Создаем Treeview для отображения документов
+        columns = ('select', 'contractor', 'doc_type', 'file_name')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=15)
+
+        # Настраиваем заголовки
+        tree.heading('select', text='Выбрать')
+        tree.heading('contractor', text='Контрагент')
+        tree.heading('doc_type', text='Тип документа')
+        tree.heading('file_name', text='Файл')
+
+        # Настраиваем ширину столбцов
+        tree.column('select', width=80)
+        tree.column('contractor', width=200)
+        tree.column('doc_type', width=150)
+        tree.column('file_name', width=350)
+
+        # Скроллбар
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        parent.tree = tree
+
+        # Заполняем таблицу данными
+        self.update_print_table(parent, month_var, year_var, doc_vars)
+
+    def update_print_table(self, table_frame, month_var, year_var, doc_vars):
+        """Обновляет таблицу документов для печати"""
+        try:
+            month = int(month_var.get())
+            year = int(year_var.get())
+            selected_doc_types = [doc_type for doc_type, var in doc_vars.items() if var.get()]
+
+            tree = table_frame.tree
+            tree.delete(*tree.get_children())
+
+            for contractor in self.contractors:
+                documents = self.find_documents_for_print(contractor, month, year, selected_doc_types)
+
+                for doc in documents:
+                    tree.insert('', 'end', values=(
+                        '☐',  # checkbox placeholder
+                        contractor,
+                        doc['type'],
+                        doc['file']
+                    ), tags=(contractor, doc['path']))
+
+            # Привязываем обработчик клика для чекбоксов
+            def on_click(event):
+                item = tree.selection()[0]
+                values = list(tree.item(item, 'values'))
+                if values[0] == '☐':
+                    values[0] = '☑'
+                else:
+                    values[0] = '☐'
+                tree.item(item, values=values)
+
+            tree.bind('<Button-1>', on_click)
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось обновить список: {e}")
+
+    def print_selected_documents(self, table_frame, printer_var, copies_vars):
+        """Печатает выбранные документы в правильном порядке"""
+        try:
+            tree = table_frame.tree
+            printer_name = printer_var.get()
+
+            if not printer_name:
+                messagebox.showwarning("Предупреждение", "Выберите принтер")
+                return
+
+            # Собираем все выбранные документы
+            selected_items = []
+            for item in tree.get_children():
+                values = tree.item(item, 'values')
+                if values[0] == '☑':  # Если выбран
+                    tags = tree.item(item, 'tags')
+                    file_path = tags[1] if len(tags) > 1 else None
+                    selected_items.append({
+                        'contractor': values[1],
+                        'doc_type': values[2],
+                        'file_name': values[3],
+                        'file_path': file_path
+                    })
+
+            if not selected_items:
+                messagebox.showwarning("Предупреждение", "Не выбран ни один документ")
+                return
+
+            # Группируем документы по контрагентам
+            contractors_docs = {}
+            for item in selected_items:
+                contractor = item['contractor']
+                if contractor not in contractors_docs:
+                    contractors_docs[contractor] = {}
+
+                doc_type = item['doc_type']
+                contractors_docs[contractor][doc_type] = item
+
+            # Получаем окно для доступа к логу
+            window = table_frame.winfo_toplevel()
+            print_log = window.print_log
+
+            total_printed = 0
+            total_errors = 0
+
+            # Печатаем в правильном порядке: по контрагентам, потом по типам документов
+            for contractor in sorted(contractors_docs.keys()):
+                print_log.insert(tk.END, f"\n--- Печать документов для {contractor} ---\n")
+                print_log.see(tk.END)
+                window.update_idletasks()
+
+                # Печатаем документы в заданном порядке типов
+                for doc_type in self.doc_types:
+                    if doc_type in contractors_docs[contractor]:
+                        item = contractors_docs[contractor][doc_type]
+                        copies_count = int(copies_vars[doc_type].get()) if copies_vars[doc_type].get().isdigit() else 1
+
+                        print_log.insert(tk.END, f"  {doc_type} ({copies_count} копий):\n")
+
+                        # Печатаем все копии подряд
+                        for copy_num in range(copies_count):
+                            try:
+                                success = self.print_document(item['file_path'], printer_name)
+                                if success:
+                                    total_printed += 1
+                                    print_log.insert(tk.END, f"    ✓ Копия {copy_num + 1}: {item['file_name']}\n")
+                                else:
+                                    total_errors += 1
+                                    print_log.insert(tk.END,
+                                                     f"    ✗ Ошибка копии {copy_num + 1}: {item['file_name']}\n")
+                            except Exception as e:
+                                total_errors += 1
+                                print_log.insert(tk.END, f"    ✗ Ошибка копии {copy_num + 1}: {e}\n")
+
+                            print_log.see(tk.END)
+                            window.update_idletasks()
+
+            print_log.insert(tk.END, f"\n=== ИТОГО ===\n")
+            print_log.insert(tk.END, f"Отправлено на печать: {total_printed} документов\n")
+            if total_errors > 0:
+                print_log.insert(tk.END, f"Ошибок: {total_errors}\n")
+
+            message = f"Отправлено на печать: {total_printed} документов"
+            if total_errors > 0:
+                message += f"\nОшибок: {total_errors}"
+
+            messagebox.showinfo("Результат печати", message)
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при печати: {e}")
+
+    def select_all_print_documents(self, table_frame):
+        """Выбирает все документы в таблице печати"""
+        try:
+            tree = table_frame.tree
+            for item in tree.get_children():
+                values = list(tree.item(item, 'values'))
+                values[0] = '☑'
+                tree.item(item, values=values)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось выбрать все документы: {e}")
+
+    def deselect_all_print_documents(self, table_frame):
+        """Снимает выбор со всех документов в таблице печати"""
+        try:
+            tree = table_frame.tree
+            for item in tree.get_children():
+                values = list(tree.item(item, 'values'))
+                values[0] = '☐'
+                tree.item(item, values=values)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось снять выбор: {e}")
 
     def run(self):
         """Запуск приложения"""
